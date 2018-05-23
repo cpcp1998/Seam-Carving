@@ -4,9 +4,13 @@ import sys
 import cv2
 import numpy as np
 import torch
+import skimage.filters
+import skimage.morphology
+from multiprocessing import Pool
 
 device = torch.device('cuda')
 #torch.set_num_threads(72)
+pool_size = 20
 
 #filters for computation of energy
 filter_hori = torch.tensor([[[[[1,-1]]]]], dtype=torch.float32, device=device)
@@ -79,11 +83,56 @@ def regular_energy(image):
 
     return energy
 
+def to_grayscale(image):
+    _, height, width = image.shape
+    image = image.cpu()
+    image *= 255.0
+    image = image.to(torch.uint8)
+    image = image.numpy()
+    image = np.transpose(image, (1, 2, 0))
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    return image
+
+def local_entropy_worker(image):
+    return skimage.filters.rank.entropy(image, skimage.morphology.square(9))
+
+#process pool for local entropy calculation
+pool = Pool(pool_size)
+
+def local_entropy(image):
+    _, height, width = image.shape
+    image = to_grayscale(image)
+
+    if height <= 9:
+        return skimage.filters.rank.entropy(image, skimage.morphology.square(9))
+
+    pool_size_eff = min(pool_size, height-8)
+    lines = height + 8 * (pool_size_eff - 1)
+    calc_ranges = [(lines*i//pool_size_eff-i*8, lines*(i+1)//pool_size_eff-i*8)
+            for i in range(pool_size_eff)]
+    image_slice = [image[x[0]:x[1]] for x in calc_ranges]
+    entropy_slice = pool.map(local_entropy_worker, image_slice)
+
+    for i in range(1, pool_size_eff - 1):
+        entropy_slice[i] = entropy_slice[i][4:-4]
+
+    entropy_slice[0] = entropy_slice[0][:-4]
+    entropy_slice[-1] = entropy_slice[-1][4:]
+
+    entropy = np.concatenate(entropy_slice)
+    entropy = torch.from_numpy(entropy)
+    entropy = entropy.to(torch.float32)
+    entropy = entropy.to(device)
+
+    return entropy
+
 def energy_driver(image, type):
     if type >= 3:
         raise NotImplementedError
 
     energy = regular_energy(image)
+
+    energy += local_entropy(image)
 
     return energy
 
