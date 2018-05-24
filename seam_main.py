@@ -8,6 +8,9 @@ import skimage.filters
 import skimage.morphology
 from multiprocessing import Pool
 import itertools
+import numba
+from numba import jit, njit, prange
+import math
 
 device = torch.device('cuda')
 #torch.set_num_threads(72)
@@ -29,6 +32,7 @@ def regular_energy(image):
     energy = torch.zeros((height, width), dtype=torch.float32, device=device)
 
     image = image.reshape((1, 1, 3, height, width))
+    image = image.to(device)
 
     diff_hori = torch.nn.functional.conv3d(image, filter_hori)
     diff_vert = torch.nn.functional.conv3d(image, filter_vert)
@@ -82,80 +86,144 @@ def regular_energy(image):
     weight[-1,-1] = 3
     energy = energy / weight
 
-    return energy
+    return energy.cpu()
 
 def to_grayscale(image):
     _, height, width = image.shape
-    image = image.cpu()
-    image *= 255.0
+    image = image * 255.0
     image = image.to(torch.uint8)
     image = image.numpy()
     image = np.transpose(image, (1, 2, 0))
     image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     return image
 
-def local_entropy_worker(image):
-    return skimage.filters.rank.entropy(image, skimage.morphology.square(9))
+@njit(parallel=True)
+def local_entropy_master(image, entropy, split):
+    height, width = image.shape
 
-#process pool for local entropy calculation
-pool = Pool(pool_size)
+    for thread in prange(len(split)):
+        local_entropy_worker(image, entropy, split[thread])
 
+@njit(parallel=True)
+def local_entropy_worker(image, entropy, params):
+    height, width = image.shape
+    radius = 4
+
+    x0, x1, y0, y1 = params
+
+    bin = [0] * 256
+    x = x0
+    y = y0
+    direction = 1
+    total = 0
+    nplogp = 0
+
+    for xx in range(max(0,x-radius), min(height, x+radius+1)):
+        for yy in range(max(0,y-radius), min(width, y+radius+1)):
+            bin[image[xx, yy]] += 1
+            total += 1
+
+    for i in range(256):
+        if bin[i]:
+            nplogp -= bin[i] * math.log(bin[i])
+
+    while x < x1:
+        res = math.log(total) + nplogp / total
+        res /= math.log(2)
+
+        entropy[x, y] = res
+
+        y += direction
+
+        if y >= y1 or y < y0:
+            y -= direction
+            direction = -direction
+            x += 1
+            if x >= x1:
+                break
+
+            xx = x - radius - 1
+            if xx >= 0:
+                for yy in range(max(0,y-radius), min(width, y+radius+1)):
+                    idx = image[xx, yy]
+                    nplogp += bin[idx] * math.log(bin[idx])
+                    bin[idx] -= 1
+                    total -= 1
+                    if bin[idx]:
+                        nplogp -= bin[idx] * math.log(bin[idx])
+
+            xx = x + radius
+            if xx < height:
+                for yy in range(max(0,y-radius), min(width, y+radius+1)):
+                    idx = image[xx, yy]
+                    if bin[idx]:
+                        nplogp += bin[idx] * math.log(bin[idx])
+                    bin[idx] += 1
+                    total += 1
+                    nplogp -= bin[idx] * math.log(bin[idx])
+
+        elif direction == 1:
+            yy = y - radius -1
+            if yy >= 0:
+                for xx in range(max(0,x-radius), min(height, x+radius+1)):
+                    idx = image[xx, yy]
+                    nplogp += bin[idx] * math.log(bin[idx])
+                    bin[idx] -= 1
+                    total -= 1
+                    if bin[idx]:
+                        nplogp -= bin[idx] * math.log(bin[idx])
+
+            yy = y + radius
+            if yy < width:
+                for xx in range(max(0,x-radius), min(height, x+radius+1)):
+                    idx = image[xx, yy]
+                    if bin[idx]:
+                        nplogp += bin[idx] * math.log(bin[idx])
+                    bin[idx] += 1
+                    total += 1
+                    nplogp -= bin[idx] * math.log(bin[idx])
+
+        else:
+            yy = y + radius +1
+            if yy < width:
+                for xx in range(max(0,x-radius), min(height, x+radius+1)):
+                    idx = image[xx, yy]
+                    nplogp += bin[idx] * math.log(bin[idx])
+                    bin[idx] -= 1
+                    total -= 1
+                    if bin[idx]:
+                        nplogp -= bin[idx] * math.log(bin[idx])
+
+            yy = y - radius
+            if yy >= 0:
+                for xx in range(max(0,x-radius), min(height, x+radius+1)):
+                    idx = image[xx, yy]
+                    if bin[idx]:
+                        nplogp += bin[idx] * math.log(bin[idx])
+                    bin[idx] += 1
+                    total += 1
+                    nplogp -= bin[idx] * math.log(bin[idx])
+
+#checkboard parallel
 def local_entropy(image):
     _, height, width = image.shape
     image = to_grayscale(image)
-
-    if height <= 9:
-        return skimage.filters.rank.entropy(image, skimage.morphology.square(9))
-
-    pool_size_eff = min(pool_size, height-8)
-    lines = height + 8 * (pool_size_eff - 1)
-    calc_ranges = [(lines*i//pool_size_eff-i*8, lines*(i+1)//pool_size_eff-i*8)
-            for i in range(pool_size_eff)]
-    image_slice = [image[x[0]:x[1]] for x in calc_ranges]
-    entropy_slice = pool.map(local_entropy_worker, image_slice)
-
-    for i in range(1, pool_size_eff - 1):
-        entropy_slice[i] = entropy_slice[i][4:-4]
-
-    entropy_slice[0] = entropy_slice[0][:-4]
-    entropy_slice[-1] = entropy_slice[-1][4:]
-
-    entropy = np.concatenate(entropy_slice)
-    entropy = torch.from_numpy(entropy)
-    entropy = entropy.to(torch.float32)
-    entropy = entropy.to(device)
-
-    return entropy
-
-#checkboard parallel
-def local_entropy_alternative(image):
-    _, height, width = image.shape
-    image = to_grayscale(image)
+    entropy = np.empty_like(image, dtype=np.float32)
 
     step = 80
 
     x_len = len(range(0, height, step))
     y_len = len(range(0, width, step))
     xy_ranges = list(itertools.product(range(0, height, step), range(0, width, step)))
-    calc_ranges = [(max(0, x[0]-4), min(height, x[0]+step+4), max(0,x[1]-4), min(width, x[1]+step+4)) for x in xy_ranges]
-    result_ranges = [(x[0], min(height, x[0]+step), x[1], min(width, x[1]+step)) for x in xy_ranges]
+    calc_ranges = [(x[0], min(height, x[0]+step), x[1], min(width, x[1]+step)) for x in xy_ranges]
 
-    image_slice = [image[x[0]:x[1], x[2]:x[3]] for x in calc_ranges]
-    entropy_slice = pool.map(local_entropy_worker, image_slice)
+    local_entropy_master(image, entropy, calc_ranges)
 
-    for i in range(len(xy_ranges)):
-        x0 = result_ranges[i][0] - calc_ranges[i][0]
-        x1 = result_ranges[i][1] - calc_ranges[i][0]
-        y0 = result_ranges[i][2] - calc_ranges[i][2]
-        y1 = result_ranges[i][3] - calc_ranges[i][2]
-        entropy_slice[i] = entropy_slice[i][x0:x1, y0:y1]
-
-    entropy_slice = [np.concatenate(entropy_slice[x*y_len : (x+1)*y_len], axis=1) for x in range(x_len)]
-    entropy = np.concatenate(entropy_slice)
+    #std = skimage.filters.rank.entropy(image, skimage.morphology.square(9))
+    #print(abs(std - entropy).max())
 
     entropy = torch.from_numpy(entropy)
     entropy = entropy.to(torch.float32)
-    entropy = entropy.to(device)
 
     return entropy
 
@@ -194,12 +262,13 @@ def cumulate(energy, forward, image=None):
             output[x,:] += min
     else:
         image = image.reshape((1, 1, 3, height, width))
+        image = image.to(device)
         diff_hori2 = torch.nn.functional.conv3d(image, filter_hori2)
         diff_diag = torch.nn.functional.conv3d(image, filter_diag)
         diff_anti = torch.nn.functional.conv3d(image, filter_anti)
-        diff_hori2 = diff_hori2.abs().mean(2).reshape(height, width-2)
-        diff_diag = diff_diag.abs().mean(2).reshape(height-1, width-1)
-        diff_anti = diff_anti.abs().mean(2).reshape(height-1, width-1)
+        diff_hori2 = diff_hori2.abs().mean(2).reshape(height, width-2).cpu()
+        diff_diag = diff_diag.abs().mean(2).reshape(height-1, width-1).cpu()
+        diff_anti = diff_anti.abs().mean(2).reshape(height-1, width-1).cpu()
         diff_hori2 = torch.nn.functional.pad(diff_hori2, (1,1))
 
         output+= diff_hori2
@@ -219,7 +288,7 @@ def cumulate(energy, forward, image=None):
 
 def find_seam(cumulative_map, choice):
     height, width = cumulative_map.shape
-    output = torch.empty(height, dtype=torch.int32, device=device)
+    output = torch.empty(height, dtype=torch.int32)
     output[-1] = torch.argmin(cumulative_map[-1,:])
     for x in range(height-2, -1, -1):
         c = choice[x+1, output[x+1]].to(torch.int32)
@@ -237,7 +306,7 @@ def process_driver(image, width, height, type):
     energy = energy_driver(image, type)
 
     #calculate cumulative map by dynamic programming
-    cumulative_map, choice = cumulate(energy, False, image)
+    cumulative_map, choice = cumulate(energy, True, image)
 
     seam = find_seam(cumulative_map, choice)
 
@@ -280,7 +349,6 @@ def main():
     image_in = np.transpose(image_in, (2, 0, 1))
     image_in = torch.from_numpy(image_in)
     image_in = image_in.to(torch.float32)
-    image_in = image_in.to(device)
     image_in /= 255.0
     #image_in should be a 3*H*W pytorch tensor of type float32
 
@@ -290,7 +358,6 @@ def main():
     #image_out should be a 3*H*W pytorch tensor of type float32
     #write the output
     image_out *= 255.0
-    image_out = image_out.cpu()
     image_out = image_out.to(torch.uint8)
     image_out = image_out.numpy()
     image_out = np.transpose(image_out, (1, 2, 0))
