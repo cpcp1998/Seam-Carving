@@ -7,6 +7,7 @@ import torch
 import skimage.filters
 import skimage.morphology
 from multiprocessing import Pool
+import itertools
 
 device = torch.device('cuda')
 #torch.set_num_threads(72)
@@ -120,6 +121,38 @@ def local_entropy(image):
     entropy_slice[-1] = entropy_slice[-1][4:]
 
     entropy = np.concatenate(entropy_slice)
+    entropy = torch.from_numpy(entropy)
+    entropy = entropy.to(torch.float32)
+    entropy = entropy.to(device)
+
+    return entropy
+
+#checkboard parallel
+def local_entropy_alternative(image):
+    _, height, width = image.shape
+    image = to_grayscale(image)
+
+    step = 80
+
+    x_len = len(range(0, height, step))
+    y_len = len(range(0, width, step))
+    xy_ranges = list(itertools.product(range(0, height, step), range(0, width, step)))
+    calc_ranges = [(max(0, x[0]-4), min(height, x[0]+step+4), max(0,x[1]-4), min(width, x[1]+step+4)) for x in xy_ranges]
+    result_ranges = [(x[0], min(height, x[0]+step), x[1], min(width, x[1]+step)) for x in xy_ranges]
+
+    image_slice = [image[x[0]:x[1], x[2]:x[3]] for x in calc_ranges]
+    entropy_slice = pool.map(local_entropy_worker, image_slice)
+
+    for i in range(len(xy_ranges)):
+        x0 = result_ranges[i][0] - calc_ranges[i][0]
+        x1 = result_ranges[i][1] - calc_ranges[i][0]
+        y0 = result_ranges[i][2] - calc_ranges[i][2]
+        y1 = result_ranges[i][3] - calc_ranges[i][2]
+        entropy_slice[i] = entropy_slice[i][x0:x1, y0:y1]
+
+    entropy_slice = [np.concatenate(entropy_slice[x*y_len : (x+1)*y_len], axis=1) for x in range(x_len)]
+    entropy = np.concatenate(entropy_slice)
+
     entropy = torch.from_numpy(entropy)
     entropy = entropy.to(torch.float32)
     entropy = entropy.to(device)
