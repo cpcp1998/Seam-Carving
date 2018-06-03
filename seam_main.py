@@ -353,6 +353,9 @@ def aug_image(image, seam_list, numofseam, height, width):
     return image
 
 
+
+
+
 # 实验证明转置几乎没有代价
 # 暂时不考虑DP的优化,主要时间花在能量和entropy的计算
 def process_driver(image, width, height, type):  # 这里的宽高指的是输入的宽高
@@ -430,35 +433,11 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
         energy = energy_driver(image, type)
     image = np.transpose(image, (0, 2, 1))
     return image
-    """
-    for x in range(image_height):
-            for y in range(seam[x],image_width - 1):
-                image[0, x, y] = image[0, x, y+1]
-                image[1, x, y] = image[1, x, y+1]
-                image[2, x, y] = image[2, x, y+1]
-    image_width = image_width - 1
-    """
-    """之前的版本
-    #calculate energy
-    energy = energy_driver(image, type)
-
-    #calculate cumulative map by dynamic programming
-    cumulative_map, choice = cumulate(energy, True, image)
-
-    seam = find_seam(cumulative_map, choice)
-
-    height, width = energy.shape
-
-    for x in range(height):
-        y = seam[x]
-        image[0, x, y] = 1.0
-        image[1, x, y] = image[2, x, y] = 0.0
-    """
 
 
 def main():
     # parse command line arguments
-    """parser = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         description='Resize images by seam carving.',
         formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('filename_in', metavar='SOURCE',
@@ -476,10 +455,9 @@ def main():
     parser.add_argument('filename_out', metavar='DEST',
                         help='path to the output image')
     args = parser.parse_args()
-    """
+
     # read the input
-    #image_in = cv2.imread(args.filename_in)
-    image_in = cv2.imread("5.jpg")
+    image_in = cv2.imread(args.filename_in)
     if image_in is None:
         print('Cannot open the input image.')
         sys.exit(1)
@@ -491,8 +469,8 @@ def main():
     # image_in should be a 3*H*W pytorch tensor of type float32
 
     # process image
-    #image_out = process_driver(image_in, args.width, args.height, args.energy_type)
-    image_out = process_driver(image_in, 2050, 1080, 0)
+    image_out = process_driver(image_in, args.width, args.height, args.energy_type)
+
     # image_out should be a 3*H*W pytorch tensor of type float32
     # write the output
     image_out *= 255.0
@@ -500,8 +478,7 @@ def main():
     image_out = image_out.numpy()
     image_out = np.transpose(image_out, (1, 2, 0))
     image_out = cv2.cvtColor(image_out, cv2.COLOR_RGB2BGR)
-    #cv2.imwrite(args.filename_out, image_out)
-    cv2.imwrite("6.jpg", image_out)
+    cv2.imwrite(args.filename_out, image_out)
 
 
 if __name__ == "__main__":
