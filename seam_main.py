@@ -3,99 +3,61 @@ import argparse
 import sys
 import cv2
 import numpy as np
-import torch
-import skimage.filters
-import skimage.morphology
-from multiprocessing import Pool
 import itertools
 import numba
 from numba import jit, njit, prange
 import math
-import copy
 
-device = torch.device('cuda')
-# torch.set_num_threads(72)
-pool_size = 20
+@njit(parallel=True)
+def regular_energy_master(image, energy, split):
+    for thread in prange(len(split)):
+        regular_energy_worker(image, energy, split[thread])
 
-# filters for computation of energy
-filter_hori = torch.tensor([[[[[1, -1]]]]], dtype=torch.float32, device=device)
-filter_vert = torch.tensor([[[[[1], [-1]]]]], dtype=torch.float32, device=device)
-filter_diag = torch.tensor([[[[[1, 0], [0, -1]]]]], dtype=torch.float32, device=device)
-filter_anti = torch.tensor([[[[[0, 1], [-1, 0]]]]], dtype=torch.float32, device=device)
-filter_hori2 = torch.tensor([[[[[1, 0, -1]]]]], dtype=torch.float32, device=device)
-sum_hori = torch.tensor([[[[1, 1]]]], dtype=torch.float32, device=device)
-sum_vert = torch.tensor([[[[1], [1]]]], dtype=torch.float32, device=device)
-sum_diag = torch.tensor([[[[1, 0], [0, 1]]]], dtype=torch.float32, device=device)
-sum_anti = torch.tensor([[[[0, 1], [1, 0]]]], dtype=torch.float32, device=device)
+@njit(parallel=True)
+def regular_energy_worker(image, energy, params):
+    _, height, width = image.shape
+    x0, x1, y0, y1 = params
 
+    for x in range(x0, x1):
+        for y in range(y0, y1):
+            tot = -3
+            diff = 0.0
+            for xx in (x - 1, x, x + 1):
+                for yy in (y - 1, y, y + 1):
+                    if xx < 0 or xx >= height or yy < 0 or yy >= width:
+                        continue
+
+                    tot += 3
+                    diff += abs(image[0, x, y] - image[0, xx, yy])
+                    diff += abs(image[1, x, y] - image[1, xx, yy])
+                    diff += abs(image[2, x, y] - image[2, xx, yy])
+
+            energy[x, y] = diff / tot
 
 def regular_energy(image):
     _, height, width = image.shape
-    energy = torch.zeros((height, width), dtype=torch.float32, device=device)
+    energy = np.empty((height, width), dtype=np.float32)
 
-    image = image.reshape((1, 1, 3, height, width))
-    image = image.to(device)
+    #std = regular_energy_old(image)
 
-    diff_hori = torch.nn.functional.conv3d(image, filter_hori)
-    diff_vert = torch.nn.functional.conv3d(image, filter_vert)
-    diff_diag = torch.nn.functional.conv3d(image, filter_diag)
-    diff_anti = torch.nn.functional.conv3d(image, filter_anti)
+    step = 80
 
-    diff_hori = diff_hori.abs().mean(2)
-    diff_vert = diff_vert.abs().mean(2)
-    diff_diag = diff_diag.abs().mean(2)
-    diff_anti = diff_anti.abs().mean(2)
+    x_len = len(range(0, height, step))
+    y_len = len(range(0, width, step))
+    xy_ranges = list(itertools.product(range(0, height, step), range(0, width, step)))
+    calc_ranges = [(x[0], min(height, x[0] + step), x[1], min(width, x[1] + step)) for x in xy_ranges]
 
-    diff_hori = torch.nn.functional.conv2d(diff_hori, sum_hori, padding=(0, 1))
-    diff_vert = torch.nn.functional.conv2d(diff_vert, sum_vert, padding=(1, 0))
-    diff_diag = torch.nn.functional.conv2d(diff_diag, sum_diag, padding=(1, 1))
-    diff_anti = torch.nn.functional.conv2d(diff_anti, sum_anti, padding=(1, 1))
+    regular_energy_master(image, energy, calc_ranges)
 
-    energy += diff_hori.reshape(height, width)
-    energy += diff_vert.reshape(height, width)
-    energy += diff_diag.reshape(height, width)
-    energy += diff_anti.reshape(height, width)
+    #print(abs(std - energy).max())
+    return energy
 
-    # energy[:,1:] += diff_hori
-    # energy[:,:-1] += diff_hori
-    # energy[1:,:] += diff_vert
-    # energy[:-1,:] += diff_vert
-    # energy[1:,1:] += diff_diag
-    # energy[:-1,:-1] += diff_diag
-    # energy[1:,:-1] += diff_anti
-    # energy[:-1,1:] += diff_anti
-
-    # image = image.reshape((height, width, 3))
-    # directions = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
-    # for dir in directions:
-    #    x0 = 1 if dir[0] == 1 else 0
-    #    x1 = height - (1 if dir[0] == -1 else 0)
-    #    y0 = 1 if dir[1] == 1 else 0
-    #    y1 = width - (1 if dir[1] == -1 else 0)
-    #    origin = image[x0:x1, y0:y1, :]
-    #    new = image[height-x1:height-x0, width-y1:width-y0, :]
-    #    diff = abs(origin-new).mean(2)
-    #    energy[x0:x1, y0:y1] += diff
-
-    weight = torch.full_like(energy, 8, device=device)
-    weight[0, :] = 5
-    weight[-1, :] = 5
-    weight[:, 0] = 5
-    weight[:, -1] = 5
-    weight[0, 0] = 3
-    weight[0, -1] = 3
-    weight[-1, 0] = 3
-    weight[-1, -1] = 3
-    energy = energy / weight
-
-    return energy.cpu()
 
 
 def to_grayscale(image):
     _, height, width = image.shape
     image = image * 255.0
-    image = image.to(torch.uint8)
-    image = image.numpy()
+    image = image.astype(np.uint8)
     image = np.transpose(image, (1, 2, 0))
     image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     return image
@@ -228,9 +190,6 @@ def local_entropy(image):
     # std = skimage.filters.rank.entropy(image, skimage.morphology.square(9))
     # print(abs(std - entropy).max())
 
-    entropy = torch.from_numpy(entropy)
-    entropy = entropy.to(torch.float32)
-
     return entropy
 
 
@@ -238,68 +197,168 @@ def energy_driver(image, type):
     if type >= 3:
         raise NotImplementedError
 
-    energy = regular_energy(image)
+    energy = 8 * regular_energy(image)
 
     energy += local_entropy(image)
 
     return energy
 
 
+
+@njit(parallel=True)
+def cumulate_upper_worker(energy, image, output, choice, params):
+    height, width = energy.shape
+
+    x0, x1, y0, y1 = params
+
+    for i, x in enumerate(range(x0, x1)):
+        if x >= height:
+            break
+        for y in range(y0 + i, y1 - i):
+            if y < 0:
+                continue
+            if y >= width:
+                break
+            left_edge = (y == 0)
+            right_edge = (y == width - 1)
+
+            base = energy[x, y]
+            if not left_edge and not right_edge:
+                diff = abs(image[0, x, y - 1] - image[0, x, y + 1])
+                diff += abs(image[1, x, y - 1] - image[1, x, y + 1])
+                diff += abs(image[2, x, y - 1] - image[2, x, y + 1])
+                base += diff / 3
+
+            best = output[x - 1, y]
+            best_choice = 1
+            if not left_edge:
+                left = output[x - 1, y - 1]
+                diff = abs(image[0, x, y] - image[0, x - 1, y - 1])
+                diff += abs(image[1, x, y] - image[1, x - 1, y - 1])
+                diff += abs(image[2, x, y] - image[2, x - 1, y - 1])
+                left += diff / 3
+                if left < best:
+                    best = left
+                    best_choice = 0
+
+            if not right_edge:
+                right = output[x - 1, y + 1]
+                diff = abs(image[0, x, y] - image[0, x - 1, y + 1])
+                diff += abs(image[1, x, y] - image[1, x - 1, y + 1])
+                diff += abs(image[2, x, y] - image[2, x - 1, y + 1])
+                right += diff / 3
+                if right < best:
+                    best = right
+                    best_choice = 2
+
+            output[x, y] = best + base
+            choice[x, y] = best_choice
+
+
+@njit(parallel=True)
+def cumulate_lower_worker(energy, image, output, choice, params):
+    height, width = energy.shape
+
+    x0, x1, y0, y1 = params
+
+    for i, x in enumerate(range(x0, x1)):
+        if x >= height:
+            break
+        for y in range(y0 - i, y1 + i):
+            if y < 0:
+                continue
+            if y >= width:
+                break
+            left_edge = (y == 0)
+            right_edge = (y == width - 1)
+
+            base = energy[x, y]
+            if not left_edge and not right_edge:
+                diff = abs(image[0, x, y - 1] - image[0, x, y + 1])
+                diff += abs(image[1, x, y - 1] - image[1, x, y + 1])
+                diff += abs(image[2, x, y - 1] - image[2, x, y + 1])
+                base += diff / 3
+
+            best = output[x - 1, y]
+            best_choice = 1
+            if not left_edge:
+                left = output[x - 1, y - 1]
+                diff = abs(image[0, x, y] - image[0, x - 1, y - 1])
+                diff += abs(image[1, x, y] - image[1, x - 1, y - 1])
+                diff += abs(image[2, x, y] - image[2, x - 1, y - 1])
+                left += diff / 3
+                if left < best:
+                    best = left
+                    best_choice = 0
+
+            if not right_edge:
+                right = output[x - 1, y + 1]
+                diff = abs(image[0, x, y] - image[0, x - 1, y + 1])
+                diff += abs(image[1, x, y] - image[1, x - 1, y + 1])
+                diff += abs(image[2, x, y] - image[2, x - 1, y + 1])
+                right += diff / 3
+                if right < best:
+                    best = right
+                    best_choice = 2
+
+            output[x, y] = best + base
+            choice[x, y] = best_choice
+
+@njit(parallel=True)
+def cumulate_helper(energy, image):
+    height, width = energy.shape
+    output = energy.copy()
+    choice = np.empty_like(energy, dtype=np.uint8)
+
+    for y in range(1, width - 1):
+        output[0, y] += abs(image[0, 0, y - 1] - image[0, 0, y + 1]) / 3
+        output[0, y] += abs(image[1, 0, y - 1] - image[1, 0, y + 1]) / 3
+        output[0, y] += abs(image[2, 0, y - 1] - image[2, 0, y + 1]) / 3
+
+    x_step = 40
+    y_step = x_step * 2 - 1
+
+    y_len_1 = len(range(0, width, y_step))
+    y_len_2 = len(range(-1, width + x_step - 2, y_step))
+
+    for x in range(1, height, x_step):
+        for idx in prange(y_len_1):
+            y = idx * y_step
+            cumulate_upper_worker(energy, image, output, choice, (x, x + x_step, y, y + y_step))
+        for idx in prange(y_len_2):
+            y = -1 + idx * y_step
+            cumulate_lower_worker(energy, image, output, choice, (x + 1, x + x_step, y, y + 2))
+
+    return output, choice
+
+@njit(parallel=True)
 def cumulate(energy, forward, image=None):
     """
     Return the cumulated energy matrix and the best choice at each pixel.
     0 stands for up-left, 1 stands for up, 2 stands for up-right
     """
 
+    #std, std_c = cumulate_old(energy, forward, image)
+
     height, width = energy.shape
-    output = energy.clone()
-    choice = torch.empty_like(energy, dtype=torch.uint8)
-
-    if not forward:
-        for x in range(1, height):
-            up = output[x - 1, :]
-            left = torch.empty_like(up)
-            right = torch.empty_like(up)
-            left[1:] = up[:-1]
-            left[0] = up[0]
-            right[:-1] = up[1:]
-            right[-1] = up[-1]
-            choices = torch.stack((left, up, right), 1)
-            min, choice[x, :] = torch.min(choices, 1)
-            output[x, :] += min
+    if forward:
+        pass
     else:
-        image = image.reshape((1, 1, 3, height, width))
-        image = image.to(device)
-        diff_hori2 = torch.nn.functional.conv3d(image, filter_hori2)
-        diff_diag = torch.nn.functional.conv3d(image, filter_diag)
-        diff_anti = torch.nn.functional.conv3d(image, filter_anti)
-        diff_hori2 = diff_hori2.abs().mean(2).reshape(height, width - 2).cpu()
-        diff_diag = diff_diag.abs().mean(2).reshape(height - 1, width - 1).cpu()
-        diff_anti = diff_anti.abs().mean(2).reshape(height - 1, width - 1).cpu()
-        diff_hori2 = torch.nn.functional.pad(diff_hori2, (1, 1))
+        image = np.zeros((3, height, width), dtype=np.float32)
 
-        output += diff_hori2
-        for x in range(1, height):
-            up = output[x - 1, :]
-            left = torch.empty_like(up)
-            right = torch.empty_like(up)
-            left[1:] = up[:-1] + diff_diag[x - 1, :]
-            left[0] = up[0]
-            right[:-1] = up[1:] + diff_anti[x - 1, :]
-            right[-1] = up[-1]
-            choices = torch.stack((left, up, right), 1)
-            min, choice[x, :] = torch.min(choices, 1)
-            output[x, :] += min
+    output, choice = cumulate_helper(energy, image)
+
+    #print(abs(std - output).max())
 
     return output, choice
 
-
+@njit(parallel=True)
 def find_seam(cumulative_map, choice):
     height, width = cumulative_map.shape
-    output = torch.empty(height, dtype=torch.int32)
-    output[-1] = torch.argmin(cumulative_map[-1, :])
+    output = np.empty(height, dtype=np.int32)
+    output[-1] = np.argmin(cumulative_map[-1, :])
     for x in range(height - 2, -1, -1):
-        c = choice[x + 1, output[x + 1]].to(torch.int32)
+        c = choice[x + 1, output[x + 1]]
         c += output[x + 1] - 1
         c = max(0, c)
         c = min(width - 1, c)
@@ -309,16 +368,16 @@ def find_seam(cumulative_map, choice):
 
 # 我们有两种方案，一种是我们搞出红线来,另一种是我们把红线删掉，各自有利有弊，所以应该保留这两种模式
 
-"""   
-def local_entropy_update(image,width, height):
-    return
 
-def local_gradient_update(image,width, height):
-    return
+#def local_entropy_update(image,width, height):
+#    return
+#
+#def local_gradient_update(image,width, height):
+#    return
+#
+#def energy_update(image, width, height, seam)
+#    return
 
-def energy_update(image, width, height, seam)
-    return
- """
 
 
 # 把待处理的seam的坐标进行转换
@@ -343,7 +402,7 @@ def aug_image(image, seam_list, numofseam, height, width):
         image = np.insert(image, width, chunk, 2)
         width += 1
         #print(image.size())
-        image_t = copy.deepcopy(image)
+        image_t = image.copy()
         for y in range(height):
             #print(seam_list[x][y])
             #image[:, y, seam_list[x][y]:-1]
@@ -386,7 +445,7 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
         while auc_size > 0:
             energy = energy_driver(image, type)
             print(image.size())
-            image_mask = copy.deepcopy(image)
+            image_mask = image.copy()
             image_width = updated_width
             this_size = 0
             if auc_size >= chunksize:
@@ -463,19 +522,17 @@ def main():
         sys.exit(1)
     image_in = cv2.cvtColor(image_in, cv2.COLOR_BGR2RGB)
     image_in = np.transpose(image_in, (2, 0, 1))
-    image_in = torch.from_numpy(image_in)
-    image_in = image_in.to(torch.float32)
+    image_in = image_in.astype(np.float32)
     image_in /= 255.0
-    # image_in should be a 3*H*W pytorch tensor of type float32
+    # image_in should be a 3*H*W numpy array of type float32
 
     # process image
     image_out = process_driver(image_in, args.width, args.height, args.energy_type)
 
-    # image_out should be a 3*H*W pytorch tensor of type float32
+    # image_out should be a 3*H*W numpy array of type float32
     # write the output
     image_out *= 255.0
-    image_out = image_out.to(torch.uint8)
-    image_out = image_out.numpy()
+    image_out = image_out.astype(np.uint8)
     image_out = np.transpose(image_out, (1, 2, 0))
     image_out = cv2.cvtColor(image_out, cv2.COLOR_RGB2BGR)
     cv2.imwrite(args.filename_out, image_out)
