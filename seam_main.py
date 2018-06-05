@@ -9,6 +9,54 @@ import math
 
 
 @njit(parallel=True)
+def remove_seam_energy(energy, seam):
+    height, width = energy.shape
+    for x in prange(height):
+        if seam[x] == width - 1:
+            continue
+        energy[x, seam[x]:-1] = energy[x, seam[x] + 1:]
+
+@njit(parallel=True)
+def seam_range_worker(res, height, width, seam, radius):
+    blocks = 0
+
+    left = width
+    right = 0
+    first = 0
+
+    criteria = 2 * (2 * radius + 1)
+
+    for x in range(height):
+        if right - left > criteria and x - first > criteria:
+            res[blocks, 0] = max(0, first - radius)
+            res[blocks, 1] = min(height, x + radius)
+            res[blocks, 2] = left
+            res[blocks, 3] = right
+            blocks += 1
+            left = width
+            right = 0
+            first = x
+
+        if seam[x] - radius < left:
+            left = max(0, seam[x] - radius)
+        if seam[x] + radius > right:
+            right = min(seam[x] + radius, width)
+
+    res[blocks, 0] = max(0, first - radius)
+    res[blocks, 1] = height
+    res[blocks, 2] = left
+    res[blocks, 3] = right
+    blocks += 1
+
+    return blocks
+
+def seam_range(height, width, seam, radius):
+    res = np.empty((height, 4), dtype=np.int)
+    blocks = seam_range_worker(res, height, width, seam, radius)
+    return res[:blocks, :]
+
+
+@njit(parallel=True)
 def regular_energy_master(image, energy, split):
     for thread in prange(len(split)):
         regular_energy_worker(image, energy, split[thread])
@@ -59,14 +107,19 @@ def regular_energy(image):
     #print(abs(std - energy).max())
     return energy
 
+def update_regular_energy(image, energy, seam):
+    _, height, width = image.shape
+    calc_ranges = seam_range(height, width, seam, 1)
+    regular_energy_master(image, energy, calc_ranges)
+
 @njit(parallel=True)
 def cvtColor_worker(input, output, params):
     x0, x1, y0, y1 = params
 
     for x in range(x0, x1):
         for y in range(y0, y1):
-            output[x, y] = int(input[0, x, y] * 0.299
-                    + input[1, x, y] * 0.587 + input[2, x, y] * 0.114)
+            output[x, y] = int(255 * (input[0, x, y] * 0.299
+                    + input[1, x, y] * 0.587 + input[2, x, y] * 0.114))
 
 @njit(parallel=True)
 def cvtColor_master(input, output, split):
@@ -75,8 +128,6 @@ def cvtColor_master(input, output, split):
 
 def to_grayscale(image, split):
     _, height, width = image.shape
-    image = image * 255.0
-    image = image.astype(np.uint8)
     output = np.empty((height, width), np.uint8)
     cvtColor_master(image, output, split)
 
@@ -218,14 +269,40 @@ def local_entropy(image):
 
     return entropy
 
+def update_local_entropy(image, energy, seam):
+    _, height, width = image.shape
+    calc_ranges = seam_range(height, width, seam, 4)
+    image_ranges = seam_range(height, width, seam, 8)
+    image = to_grayscale(image, image_ranges)
+    local_entropy_master(image, energy, calc_ranges)
+
+last_regular_energy = None
+last_local_entropy = None
 
 def energy_driver(image, type, seam=None):
+    global last_regular_energy
+    global last_local_entropy
+
     if type >= 3:
         raise NotImplementedError
 
-    energy = 8 * regular_energy(image)
+    if not seam is None:
+        remove_seam_energy(last_regular_energy, seam)
+        last_regular_energy = last_regular_energy[:, :-1]
+        update_regular_energy(image, last_regular_energy, seam)
+    else:
+        last_regular_energy = regular_energy(image)
 
-    energy += local_entropy(image)
+    energy = 8 * last_regular_energy
+
+    if not seam is None:
+        remove_seam_energy(last_local_entropy, seam)
+        last_local_entropy = last_local_entropy[:, :-1]
+        update_local_entropy(image, last_local_entropy, seam)
+    else:
+        last_local_entropy = local_entropy(image)
+
+    energy += last_local_entropy
 
     return energy
 
@@ -437,8 +514,13 @@ def aug_image(image, seam_list, numofseam, height, width):
     print(image.size())
     return image
 
-
-
+@njit(parallel=True)
+def remove_seam(image, seam):
+    _, height, width = image.shape
+    for x in prange(height):
+        if seam[x] == width - 1:
+            continue
+        image[:, x, seam[x]:-1] = image[:, x, seam[x] + 1:]
 
 
 # 实验证明转置几乎没有代价
@@ -447,25 +529,21 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
     if type > 1:
         raise NotImplementedError
     # 我们先删列再删行
-    energy = energy_driver(image, type)
-    image_height, image_width = energy.shape
+    _, image_height, image_width = image.shape
     # 放大的数量
     chunksize = 100
     if image_width >= width:
+        seam = None
         while image_width > width:
+            energy = energy_driver(image, type, seam)
             cumulative_map, choice = cumulate(energy, True, image)
             seam = find_seam(cumulative_map, choice)
             # image = np.delete(image,seam,1)
 
-            for x in range(image_height):
-                if x == image_height - 1:
-                    continue
-                image[:, x, seam[x]:-1] = image[:, x, seam[x] + 1:]
+            remove_seam(image, seam)
             image_width = image_width - 1
-            image = np.delete(image, image_width, 2)
-            energy = energy_driver(image, type)
+            image = image[:,:,:-1]
     else:
-
         auc_size = width - image_width
         updated_width = image_width
         while auc_size > 0:
