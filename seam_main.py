@@ -8,7 +8,7 @@ from numba import jit, njit, prange
 import math
 
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def remove_seam_energy(energy, seam):
     height, width = energy.shape
     for x in prange(height):
@@ -16,7 +16,7 @@ def remove_seam_energy(energy, seam):
             continue
         energy[x, seam[x]:-1] = energy[x, seam[x] + 1:]
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def seam_range_worker(res, height, width, seam, radius):
     blocks = 0
 
@@ -56,12 +56,12 @@ def seam_range(height, width, seam, radius):
     return res[:blocks, :]
 
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def regular_energy_master(image, energy, split):
     for thread in prange(len(split)):
         regular_energy_worker(image, energy, split[thread])
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def regular_energy_worker(image, energy, params):
     _, height, width = image.shape
     x0, x1, y0, y1 = params
@@ -82,7 +82,7 @@ def regular_energy_worker(image, energy, params):
 
             energy[x, y] = diff / tot
 
-#@jit(parallel=True)
+#@jit(parallel=False)
 def regular_energy(image):
     _, height, width = image.shape
     energy = np.empty((height, width), dtype=np.float32)
@@ -112,7 +112,7 @@ def update_regular_energy(image, energy, seam):
     calc_ranges = seam_range(height, width, seam, 1)
     regular_energy_master(image, energy, calc_ranges)
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def cvtColor_worker(input, output, params):
     x0, x1, y0, y1 = params
 
@@ -121,7 +121,7 @@ def cvtColor_worker(input, output, params):
             output[x, y] = int(255 * (input[0, x, y] * 0.299
                     + input[1, x, y] * 0.587 + input[2, x, y] * 0.114))
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def cvtColor_master(input, output, split):
     for thread in prange(len(split)):
         cvtColor_worker(input, output, split[thread])
@@ -133,7 +133,7 @@ def to_grayscale(image, split):
 
     return output
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def local_entropy_master(image, entropy, split):
     height, width = image.shape
 
@@ -141,7 +141,7 @@ def local_entropy_master(image, entropy, split):
         local_entropy_worker(image, entropy, split[thread])
 
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def local_entropy_worker(image, entropy, params):
     height, width = image.shape
     radius = 4
@@ -308,7 +308,7 @@ def energy_driver(image, type, seam=None):
 
 
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def cumulate_upper_worker(energy, image, output, choice, params):
     height, width = energy.shape
 
@@ -358,7 +358,7 @@ def cumulate_upper_worker(energy, image, output, choice, params):
             choice[x, y] = best_choice
 
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def cumulate_lower_worker(energy, image, output, choice, params):
     height, width = energy.shape
 
@@ -407,7 +407,7 @@ def cumulate_lower_worker(energy, image, output, choice, params):
             output[x, y] = best + base
             choice[x, y] = best_choice
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def cumulate_helper(energy, image):
     height, width = energy.shape
     output = energy.copy()
@@ -434,7 +434,7 @@ def cumulate_helper(energy, image):
 
     return output, choice
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def cumulate(energy, forward, image=None):
     """
     Return the cumulated energy matrix and the best choice at each pixel.
@@ -455,7 +455,7 @@ def cumulate(energy, forward, image=None):
 
     return output, choice
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def find_seam(cumulative_map, choice):
     height, width = cumulative_map.shape
     output = np.empty(height, dtype=np.int32)
@@ -514,7 +514,7 @@ def aug_image(image, seam_list, numofseam, height, width):
     print(image.size())
     return image
 
-@njit(parallel=True)
+@njit(parallel=False, cache=True)
 def remove_seam(image, seam):
     _, height, width = image.shape
     for x in prange(height):
