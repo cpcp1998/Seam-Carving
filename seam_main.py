@@ -3,10 +3,10 @@ import argparse
 import sys
 import cv2
 import numpy as np
-import itertools
 import numba
 from numba import jit, njit, prange
 import math
+
 
 @njit(parallel=True)
 def regular_energy_master(image, energy, split):
@@ -34,6 +34,7 @@ def regular_energy_worker(image, energy, params):
 
             energy[x, y] = diff / tot
 
+#@jit(parallel=True)
 def regular_energy(image):
     _, height, width = image.shape
     energy = np.empty((height, width), dtype=np.float32)
@@ -44,24 +45,42 @@ def regular_energy(image):
 
     x_len = len(range(0, height, step))
     y_len = len(range(0, width, step))
-    xy_ranges = list(itertools.product(range(0, height, step), range(0, width, step)))
-    calc_ranges = [(x[0], min(height, x[0] + step), x[1], min(width, x[1] + step)) for x in xy_ranges]
+    calc_ranges = np.empty((x_len * y_len, 4), dtype=np.int)
+    for idx1, x in enumerate(range(0, height, step)):
+        for idx2, y in enumerate(range(0, width, step)):
+            idx = idx1 * y_len + idx2
+            calc_ranges[idx, 0] = x
+            calc_ranges[idx, 1] = min(height, x + step)
+            calc_ranges[idx, 2] = y
+            calc_ranges[idx, 3] = min(width, y + step)
 
     regular_energy_master(image, energy, calc_ranges)
 
     #print(abs(std - energy).max())
     return energy
 
+@njit(parallel=True)
+def cvtColor_worker(input, output, params):
+    x0, x1, y0, y1 = params
 
+    for x in range(x0, x1):
+        for y in range(y0, y1):
+            output[x, y] = int(input[0, x, y] * 0.299
+                    + input[1, x, y] * 0.587 + input[2, x, y] * 0.114)
 
-def to_grayscale(image):
+@njit(parallel=True)
+def cvtColor_master(input, output, split):
+    for thread in prange(len(split)):
+        cvtColor_worker(input, output, split[thread])
+
+def to_grayscale(image, split):
     _, height, width = image.shape
     image = image * 255.0
     image = image.astype(np.uint8)
-    image = np.transpose(image, (1, 2, 0))
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    return image
+    output = np.empty((height, width), np.uint8)
+    cvtColor_master(image, output, split)
 
+    return output
 
 @njit(parallel=True)
 def local_entropy_master(image, entropy, split):
@@ -175,16 +194,23 @@ def local_entropy_worker(image, entropy, params):
 # checkboard parallel
 def local_entropy(image):
     _, height, width = image.shape
-    image = to_grayscale(image)
-    entropy = np.empty_like(image, dtype=np.float32)
+    entropy = np.empty((height, width), dtype=np.float32)
 
     step = 80
 
     x_len = len(range(0, height, step))
     y_len = len(range(0, width, step))
-    xy_ranges = list(itertools.product(range(0, height, step), range(0, width, step)))
-    calc_ranges = [(x[0], min(height, x[0] + step), x[1], min(width, x[1] + step)) for x in xy_ranges]
+    calc_ranges = np.empty((x_len * y_len, 4), dtype=np.int)
+    for idx1, x in enumerate(range(0, height, step)):
+        for idx2, y in enumerate(range(0, width, step)):
+            idx = idx1 * y_len + idx2
+            calc_ranges[idx, 0] = x
+            calc_ranges[idx, 1] = min(height, x + step)
+            calc_ranges[idx, 2] = y
+            calc_ranges[idx, 3] = min(width, y + step)
+    y_len = len(range(0, width, step))
 
+    image = to_grayscale(image, calc_ranges)
     local_entropy_master(image, entropy, calc_ranges)
 
     # std = skimage.filters.rank.entropy(image, skimage.morphology.square(9))
@@ -193,7 +219,7 @@ def local_entropy(image):
     return entropy
 
 
-def energy_driver(image, type):
+def energy_driver(image, type, seam=None):
     if type >= 3:
         raise NotImplementedError
 
