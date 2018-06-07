@@ -522,6 +522,38 @@ def remove_seam(image, seam):
             continue
         image[:, x, seam[x]:-1] = image[:, x, seam[x] + 1:]
 
+def delete_seam_driver(image, width, image_width, type):
+    seam = None
+    while image_width > width:
+        energy = energy_driver(image, type, seam)
+        cumulative_map, choice = cumulate(energy, True, image)
+        seam = find_seam(cumulative_map, choice)
+        # image = np.delete(image,seam,1)
+        remove_seam(image, seam)
+        image_width = image_width - 1
+        image = image[:, :, :-1]
+    return image
+
+def aug_seam_driver(image,this_size,image_width,type):
+    numofseam = 0
+    image_mask = image.copy()
+    seam = None
+    # seam_list = np.array([[0]])
+    for need_deal in range(this_size):
+        energy = energy_driver(image_mask, type, seam)
+        cumulative_map, choice = cumulate(energy, True, image_mask)
+        seam = find_seam(cumulative_map, choice)
+        # image = np.delete(image,seam,1)
+        remove_seam(image_mask, seam)
+        image_width = image_width - 1
+        image = image[:, :, :-1]
+        if numofseam == 0:
+            seam_list = np.array([seam.numpy()])
+        else:
+            seam_list = cumu_seam(seam_list, seam.numpy(), numofseam, image_height)
+        numofseam += 1
+    image = aug_image(image, seam_list, numofseam, image_height, updated_width)
+    return image
 
 # 实验证明转置几乎没有代价
 # 暂时不考虑DP的优化,主要时间花在能量和entropy的计算
@@ -531,25 +563,17 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
     # 我们先删列再删行
     _, image_height, image_width = image.shape
     # 放大的数量
-    chunksize = 100
     if image_width >= width:
-        seam = None
-        while image_width > width:
-            energy = energy_driver(image, type, seam)
-            cumulative_map, choice = cumulate(energy, True, image)
-            seam = find_seam(cumulative_map, choice)
-            # image = np.delete(image,seam,1)
-
-            remove_seam(image, seam)
-            image_width = image_width - 1
-            image = image[:,:,:-1]
+        image = delete_seam_driver(image, width, image_width, type)
     else:
         auc_size = width - image_width
         updated_width = image_width
+        rate = 6
         while auc_size > 0:
-            energy = energy_driver(image, type)
-            print(image.size())
-            image_mask = image.copy()
+            ## adjust chunksize
+            if rate > 3 :
+                rate -= 1
+            chunksize = image_width / rate
             image_width = updated_width
             this_size = 0
             if auc_size >= chunksize:
@@ -558,25 +582,7 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
             else:
                 this_size = auc_size
                 auc_size = 0
-            numofseam = 0
-            #seam_list = np.array([[0]])
-            for need_deal in range(this_size):
-                cumulative_map, choice = cumulate(energy, True, image_mask)
-                seam = find_seam(cumulative_map, choice)
-                # image = np.delete(image,seam,1)
-                for x in range(image_height):
-                    if x == image_height - 1:
-                        continue
-                    image_mask[:, x, seam[x]:-1] = image_mask[:, x, seam[x] + 1:]
-                image_width = image_width - 1
-                image_mask = np.delete(image_mask, image_width, 2)
-                energy = energy_driver(image_mask, type)
-                if numofseam == 0:
-                    seam_list = np.array([seam.numpy()])
-                else:
-                    seam_list = cumu_seam(seam_list, seam.numpy(), numofseam, image_height)
-                numofseam += 1
-            image = aug_image(image, seam_list, numofseam, image_height, updated_width)
+            image = aug_seam_driver(image, this_size, image_width, type)
             updated_width += this_size
 
     image = np.transpose(image, (0, 2, 1))
