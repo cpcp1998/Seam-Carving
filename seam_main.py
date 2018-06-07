@@ -494,8 +494,9 @@ def cumu_seam(seam_list, seam, numofseam, height):
 
 
 # 处理最终图像
-def aug_image(image, seam_list, numofseam, height, width):
-    print(image.size())
+def aug_image(image, seam_list, numofseam):
+    _, height, width = image.shape
+    #print(image.size())
     #print(seam_list)
     for x in range(numofseam):
         # remain check
@@ -522,37 +523,35 @@ def remove_seam(image, seam):
             continue
         image[:, x, seam[x]:-1] = image[:, x, seam[x] + 1:]
 
-def delete_seam_driver(image, width, image_width, type):
+def delete_seam_driver(image, chunksize, type):
     seam = None
-    while image_width > width:
-        energy = energy_driver(image, type, seam)
-        cumulative_map, choice = cumulate(energy, True, image)
-        seam = find_seam(cumulative_map, choice)
-        # image = np.delete(image,seam,1)
-        remove_seam(image, seam)
-        image_width = image_width - 1
-        image = image[:, :, :-1]
-    return image
-
-def aug_seam_driver(image,this_size,image_width,type):
-    numofseam = 0
+    accuenergy = 0
     image_mask = image.copy()
-    seam = None
-    # seam_list = np.array([[0]])
-    for need_deal in range(this_size):
+    numofseam = 0
+    for i in range(chunksize):
         energy = energy_driver(image_mask, type, seam)
         cumulative_map, choice = cumulate(energy, True, image_mask)
         seam = find_seam(cumulative_map, choice)
+        accuenergy += cumulative_map[-1][seam[-1]]
         # image = np.delete(image,seam,1)
         remove_seam(image_mask, seam)
-        image_width = image_width - 1
-        image = image[:, :, :-1]
+        image_mask = image_mask[:, :, :-1]
         if numofseam == 0:
-            seam_list = np.array([seam.numpy()])
+            seam_list = np.array([seam])
         else:
             seam_list = cumu_seam(seam_list, seam.numpy(), numofseam, image_height)
         numofseam += 1
-    image = aug_image(image, seam_list, numofseam, image_height, updated_width)
+    return image_mask,accuenergy/chunksize,seam_list
+
+def once_aug_image(image,aug_rate,width):
+    _, image_height, image_width = image.shape
+    aug_size = width - image_width
+    while aug_size > 0:
+        chunk = min(aug_size,aug_rate*(image_width))
+        aug_size -= chunk
+        image,_,seam_list = delete_seam_driver(image, chunk, type)
+        image = aug_image(image, seam_list,chunk, image_height, image_width)
+        image_width += chunk
     return image
 
 # 实验证明转置几乎没有代价
@@ -562,48 +561,49 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
         raise NotImplementedError
     # 我们先删列再删行
     _, image_height, image_width = image.shape
-    # 放大的数量
+    aug_rate = 0.3
+    #贪心交替删除
     if image_width >= width & image_height >= height:
-            
+        chunksize = 50
+        chunk_w = min(chunksize, image_width - width)
+        chunk_h = min(chunksize, image_height - height)
+        while image_width > width | image_height > height:
+            if image_width == width:
+                image = np.transpose(image, (0, 2, 1))
+                image ,_,_ = delete_seam_driver(image,image_height - height , type)
+                image = np.transpose(image, (0, 2, 1))
+                return image
+            if image_height == height:
+                image, _, _ = delete_seam_driver(image, image_width - width, type)
+                return image
+            chunk_w = min(chunksize,image_width - width)
+            chunk_h = min(chunksize,image_height - height)
+            image_w, energy_w,_ = delete_seam_driver(image, chunk_w, type)
+            image_h, energy_h,_ = delete_seam_driver(np.transpose(image, (0, 2, 1)), chunk_h, type)
+            if energy_w >= energy_h :
+                image = np.transpose(image_h, (0, 2, 1))
+                image_height -= chunk_h
+            else :
+                image = image_w
+                image_width -= chunk_w
 
-    if image_width >= width:
-        image = delete_seam_driver(image, width, image_width, type)
-    else:
-        auc_size = width - image_width
-        updated_width = image_width
-        rate = 6
-        while auc_size > 0:
-            ## adjust chunksize
-            if rate > 3 :
-                rate -= 1
-            chunksize = image_width / rate
-            image_width = updated_width
-            this_size = 0
-            if auc_size >= chunksize:
-                this_size = chunksize
-                auc_size -= chunksize
-            else:
-                this_size = auc_size
-                auc_size = 0
-            image = aug_seam_driver(image, this_size, image_width, type)
-            updated_width += this_size
+    if image_width >= width & image_height < height:
+        image = np.transpose(image, (0, 2, 1))
+        image = once_aug_image(image, aug_rate, height)
+        image = np.transpose(image, (0, 2, 1))
+        image, _, _ = delete_seam_driver(image, image_width - width, type)
+        return image
 
-    image = np.transpose(image, (0, 2, 1))
-    energy = energy_driver(image, type)
-    while image_height > height:
-        # energy = energy_driver(image, type)
-        cumulative_map, choice = cumulate(energy, True, image)
-        seam = find_seam(cumulative_map, choice)
-        # image = np.delete(image,seam,1)
+    if image_width < width & image_height >= height:
+        image = once_aug_image(image, aug_rate, width)
+        image = np.transpose(image, (0, 2, 1))
+        image, _, _ = delete_seam_driver(image, image_height - height, type)
+        image, _, _ = delete_seam_driver(image, image_width - width, type)
+        return image
 
-        for x in range(image_width):
-            if x == image_width - 1:
-                continue
-            image[:, x, seam[x]:-1] = image[:, x, seam[x] + 1:]
-        image_height = image_height - 1
-        image = np.delete(image, image_height, 2)
-        energy = energy_driver(image, type)
-    image = np.transpose(image, (0, 2, 1))
+    #都需要增大的还没写
+
+
     return image
 
 
