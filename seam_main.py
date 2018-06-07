@@ -563,6 +563,9 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
     # 我们先删列再删行
     _, image_height, image_width = image.shape
     # 放大的数量
+    if image_width >= width & image_height >= height:
+            
+
     if image_width >= width:
         image = delete_seam_driver(image, width, image_width, type)
     else:
