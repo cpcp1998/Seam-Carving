@@ -482,7 +482,14 @@ def find_seam(cumulative_map, choice):
 #    return
 
 
-
+#把图片和两个global转置一下
+def convert_all(image):
+    image = np.transpose(image, (0, 2, 1))
+    global last_regular_energy
+    global last_local_entropy
+    last_regular_energy = np.transpose( last_regular_energy, (1, 0))
+    last_local_entropy = np.transpose( last_local_entropy, (1, 0))
+    return image
 # 把待处理的seam的坐标进行转换
 def cumu_seam(seam_list, seam, numofseam, height):
     for x in range(numofseam):
@@ -569,9 +576,11 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
         chunk_h = min(chunksize, image_height - height)
         while image_width > width | image_height > height:
             if image_width == width:
-                image = np.transpose(image, (0, 2, 1))
+                #image = np.transpose(image, (0, 2, 1))
+                image = convert_all(image)
                 image ,_,_ = delete_seam_driver(image,image_height - height , type)
-                image = np.transpose(image, (0, 2, 1))
+                #image = np.transpose(image, (0, 2, 1))
+                image = convert_all(image)
                 return image
             if image_height == height:
                 image, _, _ = delete_seam_driver(image, image_width - width, type)
@@ -579,31 +588,35 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
             chunk_w = min(chunksize,image_width - width)
             chunk_h = min(chunksize,image_height - height)
             image_w, energy_w,_ = delete_seam_driver(image, chunk_w, type)
-            image_h, energy_h,_ = delete_seam_driver(np.transpose(image, (0, 2, 1)), chunk_h, type)
+            image = convert_all(image)
+            image_h, energy_h,_ = delete_seam_driver(image, chunk_h, type)
+            image = convert_all(image)
             if energy_w >= energy_h :
-                image = np.transpose(image_h, (0, 2, 1))
+                #image = np.transpose(image_h, (0, 2, 1))
+                image = convert_all(image_h)
                 image_height -= chunk_h
             else :
                 image = image_w
                 image_width -= chunk_w
 
     if image_width >= width & image_height < height:
-        image = np.transpose(image, (0, 2, 1))
+        #image = np.transpose(image, (0, 2, 1))
+        image = convert_all(image)
         image = once_aug_image(image, aug_rate, height)
-        image = np.transpose(image, (0, 2, 1))
+        #image = np.transpose(image, (0, 2, 1))
+        image = convert_all(image)
         image, _, _ = delete_seam_driver(image, image_width - width, type)
         return image
 
     if image_width < width & image_height >= height:
         image = once_aug_image(image, aug_rate, width)
-        image = np.transpose(image, (0, 2, 1))
+        #image = np.transpose(image, (0, 2, 1))
+        image = convert_all(image)
         image, _, _ = delete_seam_driver(image, image_height - height, type)
-        image, _, _ = delete_seam_driver(image, image_width - width, type)
+        image = convert_all(image)
         return image
 
     #都需要增大的还没写
-
-
     return image
 
 
