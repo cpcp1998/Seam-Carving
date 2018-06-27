@@ -295,14 +295,15 @@ def energy_driver(image, type, seam=None):
 
     energy = 8 * last_regular_energy
 
-    if not seam is None:
-        remove_seam_energy(last_local_entropy, seam)
-        last_local_entropy = last_local_entropy[:, :-1]
-        update_local_entropy(image, last_local_entropy, seam)
-    else:
-        last_local_entropy = local_entropy(image)
+    if type == 1 or type == 2:
+        if not seam is None:
+            remove_seam_energy(last_local_entropy, seam)
+            last_local_entropy = last_local_entropy[:, :-1]
+            update_local_entropy(image, last_local_entropy, seam)
+        else:
+            last_local_entropy = local_entropy(image)
 
-    energy += last_local_entropy
+        energy += last_local_entropy
 
     return energy
 
@@ -468,20 +469,6 @@ def find_seam(cumulative_map, choice):
         output[x] = c
     return output  # output is the seam
 
-
-# 我们有两种方案，一种是我们搞出红线来,另一种是我们把红线删掉，各自有利有弊，所以应该保留这两种模式
-
-
-#def local_entropy_update(image,width, height):
-#    return
-#
-#def local_gradient_update(image,width, height):
-#    return
-#
-#def energy_update(image, width, height, seam)
-#    return
-
-
 #把图片和两个global转置一下
 def convert_all(image):
     image = np.transpose(image, (0, 2, 1))
@@ -537,7 +524,7 @@ def delete_seam_driver(image, chunksize, type):
     numofseam = 0
     for i in range(chunksize):
         energy = energy_driver(image_mask, type, seam)
-        cumulative_map, choice = cumulate(energy, True, image_mask)
+        cumulative_map, choice = cumulate(energy, type == 2, image_mask)
         seam = find_seam(cumulative_map, choice)
         accuenergy += cumulative_map[-1][seam[-1]]
         # image = np.delete(image,seam,1)
