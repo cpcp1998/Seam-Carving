@@ -101,12 +101,12 @@ def seam_range(height, width, seam, radius):
     return res[:blocks, :]
 
 
-@njit(parallel=False, cache=True)
+#@njit(parallel=False, cache=True)
 def regular_energy_master(image, energy, split):
     for thread in prange(len(split)):
         regular_energy_worker(image, energy, split[thread])
 
-@njit(parallel=False, cache=True)
+#@njit(parallel=False, cache=True)
 def regular_energy_worker(image, energy, params):
     _, height, width = image.shape
     x0, x1, y0, y1 = params
@@ -552,7 +552,7 @@ def aug_image(image, seam_list, numofseam):
         #print(image.size())
         #print(seam_list.size)
         chunk = np.zeros((3, height))
-        image = np.insert(image, width, chunk, 2)
+        image = np.insert(image, width , chunk, 2)
         width += 1
         #print(image.size())
         image_t = image.copy()
@@ -573,6 +573,8 @@ def remove_seam(image, seam):
 
 def delete_seam_driver(image, chunksize, type):
     seam = None
+    if chunksize == 0:
+        return image,0,None
     accuenergy = 0
     image_mask = image.copy()
     numofseam = 0
@@ -598,7 +600,7 @@ def once_aug_image(image,aug_rate,width,type):
     while aug_size > 0:
         chunk = min(aug_size,aug_rate*(image_width))
         aug_size -= chunk
-        image,_,seam_list = delete_seam_driver(image, chunk, type)
+        _,_,seam_list = delete_seam_driver(image, chunk, type)
         image = aug_image(image, seam_list,chunk)
         image_width += chunk
     return image
@@ -612,11 +614,8 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
     _, image_height, image_width = image.shape
     aug_rate = 0.3
     #后续会修改chunksize,优化算法
-    image, _, _ = delete_seam_driver(image, image_width - width, type)
 
 
-
-    """
     #贪心交替删除
     if (image_width >= width) & (image_height >= height):
         chunksize = 50
@@ -650,8 +649,7 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
             else :
                 image = image_w
                 image_width -= chunk_w
-
-    if image_width >= width & image_height < height:
+    if (image_width >= width) & (image_height < height):
         #image = np.transpose(image, (0, 2, 1))
         image = convert_all(image)
         image = once_aug_image(image, aug_rate, height,type)
@@ -659,15 +657,13 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
         image = convert_all(image)
         image, _, _ = delete_seam_driver(image, image_width - width, type)
         return image
-
-    if image_width < width & image_height >= height:
+    if (image_width < width) & (image_height >= height):
         image = once_aug_image(image, aug_rate, width,type)
         #image = np.transpose(image, (0, 2, 1))
         image = convert_all(image)
         image, _, _ = delete_seam_driver(image, image_height - height, type)
         image = convert_all(image)
         return image
-    """
     return image
 
 
