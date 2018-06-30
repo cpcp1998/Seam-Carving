@@ -664,6 +664,11 @@ def process_driver(image, width, height, type):  # 这里的宽高指的是输�
         image, _, _ = delete_seam_driver(image, image_height - height, type)
         image = convert_all(image)
         return image
+    else :
+        image = once_aug_image(image, aug_rate, width, type)
+        image = convert_all(image)
+        image, _, _ = once_aug_image(image, aug_rate, height, type)
+        image = convert_all(image)
     return image
 
 
