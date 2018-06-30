@@ -101,12 +101,12 @@ def seam_range(height, width, seam, radius):
     return res[:blocks, :]
 
 
-#@njit(parallel=False, cache=True)
+@njit(parallel=False, cache=True)
 def regular_energy_master(image, energy, split):
     for thread in prange(len(split)):
         regular_energy_worker(image, energy, split[thread])
 
-#@njit(parallel=False, cache=True)
+@njit(parallel=False, cache=True)
 def regular_energy_worker(image, energy, params):
     _, height, width = image.shape
     x0, x1, y0, y1 = params
@@ -532,13 +532,13 @@ def convert_all(image):
     last_cnn_energy = np.transpose( last_cnn_energy, (1, 0))
     return image
 # 把待处理的seam的坐标进行转换
+@njit(parallel=False, cache=True)
 def cumu_seam(seam_list, seam, numofseam, height):
-    seam = seam.copy()
+    seam_list[numofseam, :] = seam
     for x in range(numofseam):
         for y in range(height):
-            if seam_list[x][y] < seam[y]:
-                seam[y] += 2
-    seam_list = np.insert(seam_list, numofseam, seam, 0)
+            if seam_list[x][y] < seam_list[numofseam][y]:
+                seam_list[numofseam][y] += 2
     return seam_list
 
 
@@ -572,12 +572,14 @@ def remove_seam(image, seam):
         image[:, x, seam[x]:-1] = image[:, x, seam[x] + 1:]
 
 def delete_seam_driver(image, chunksize, type):
+    _, height, width = image.shape
     seam = None
     if chunksize == 0:
         return image,0,None
     accuenergy = 0
     image_mask = image.copy()
     numofseam = 0
+    seam_list = np.empty((chunksize, height), dtype=np.int32)
     for i in range(chunksize):
         _, image_height, image_width = image_mask.shape
         energy = energy_driver(image_mask, type, seam)
@@ -587,10 +589,7 @@ def delete_seam_driver(image, chunksize, type):
         # image = np.delete(image,seam,1)
         remove_seam(image_mask, seam)
         image_mask = image_mask[:, :, :-1]
-        if numofseam == 0:
-            seam_list = np.array([seam])
-        else:
-            seam_list = cumu_seam(seam_list, seam, numofseam, image_height)
+        seam_list = cumu_seam(seam_list, seam, numofseam, image_height)
         numofseam += 1
     return image_mask,accuenergy/chunksize,seam_list
 
@@ -598,7 +597,7 @@ def once_aug_image(image,aug_rate,width,type):
     _, image_height, image_width = image.shape
     aug_size = width - image_width
     while aug_size > 0:
-        chunk = min(aug_size,aug_rate*(image_width))
+        chunk = min(aug_size,int(aug_rate*(image_width)))
         aug_size -= chunk
         _,_,seam_list = delete_seam_driver(image, chunk, type)
         image = aug_image(image, seam_list,chunk)
