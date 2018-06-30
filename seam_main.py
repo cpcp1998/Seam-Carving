@@ -6,7 +6,52 @@ import numpy as np
 import numba
 from numba import jit, njit, prange
 import math
+import torch
+from torchvision import models, transforms
+from grad_cam import (BackPropagation, Deconvolution, GradCAM, GuidedBackPropagation)
 
+device = torch.device('cpu')
+
+def grad_cam(image):
+    model = models.vgg19_bn(pretrained=True)
+    model.to(device)
+    model.eval()
+    image = cv2.resize(image, (224, 224))
+    image = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        )
+    ])(image).unsqueeze(0)
+    image = image.to(device)
+
+    gcam = GradCAM(model=model)
+    probs, idx = gcam.forward(image)
+
+    output = None
+    for i in range(0, 5):
+        gcam.backward(idx=idx[i])
+        temp = gcam.generate(target_layer='features.52')
+        if not output is None:
+            output += temp
+        else:
+            output = temp
+
+    output /= 5
+    return output
+
+def cnn_energy(image):
+    _, h, w = image.shape
+    image = image.copy()
+    image *= 255.0
+    image = image.astype(np.uint8)
+    image = np.transpose(image, (1, 2, 0))
+
+    gcam = grad_cam(image)
+    gcam = cv2.resize(gcam, (w, h))
+
+    return gcam
 
 @njit(parallel=False, cache=True)
 def remove_seam_energy(energy, seam):
@@ -278,12 +323,11 @@ def update_local_entropy(image, energy, seam):
 
 last_regular_energy = np.empty((1,1))
 last_local_entropy = np.empty((1,1))
+last_cnn_energy = np.empty((1,1))
 def energy_driver(image, type, seam=None):
     global last_regular_energy
     global last_local_entropy
-
-    if type >= 3:
-        raise NotImplementedError
+    global last_cnn_energy
 
     if not seam is None:
         remove_seam_energy(last_regular_energy, seam)
@@ -303,6 +347,15 @@ def energy_driver(image, type, seam=None):
             last_local_entropy = local_entropy(image)
 
         energy += last_local_entropy
+
+    if type == 3:
+        if not seam is None:
+            remove_seam_energy(last_cnn_energy, seam)
+            last_cnn_energy = last_cnn_energy[:, :-1]
+        else:
+            last_cnn_energy = cnn_energy(image)
+
+        energy += last_cnn_energy
 
     return energy
 
@@ -473,8 +526,10 @@ def convert_all(image):
     image = np.transpose(image, (0, 2, 1))
     global last_regular_energy
     global last_local_entropy
+    global last_cnn_energy
     last_regular_energy = np.transpose( last_regular_energy, (1, 0))
     last_local_entropy = np.transpose( last_local_entropy, (1, 0))
+    last_cnn_energy = np.transpose( last_cnn_energy, (1, 0))
     return image
 # 把待处理的seam的坐标进行转换
 def cumu_seam(seam_list, seam, numofseam, height):
@@ -551,8 +606,6 @@ def once_aug_image(image,aug_rate,width,type):
 # 实验证明转置几乎没有代价
 # 暂时不考虑DP的优化,主要时间花在能量和entropy的计算
 def process_driver(image, width, height, type):  # 这里的宽高指的是输入的宽高
-    if type > 1:
-        raise NotImplementedError
     # 我们先删列再删行
     #height,width是目标
     #image_height图片高，image_width图片宽
